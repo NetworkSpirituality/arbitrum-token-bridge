@@ -1,0 +1,17 @@
+# Set the base image
+FROM node:18
+
+# Set working directory in Docker container
+WORKDIR /app
+
+# Copy everything from the project root
+COPY . .
+
+# Change the working directory to the app's directory
+WORKDIR /app/packages/arb-token-bridge-ui
+
+# Install dependencies
+RUN yarn install
+
+# Build the app
+RUN yarn 
