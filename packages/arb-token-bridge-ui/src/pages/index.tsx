@@ -7,7 +7,8 @@ import { Loader } from '../components/common/atoms/Loader'
 import {
   getCustomChainsFromLocalStorage,
   stylusTestnet,
-  xaiTestnet
+  xaiTestnet,
+  nscTestnet
 } from '../util/networks'
 import { mapCustomChainToNetworkData } from '../util/networks'
 
@@ -51,6 +52,17 @@ export default function Index() {
       addCustomChain({ customChain: xaiTestnet })
     } catch (error: any) {
       console.error(`Failed to register Xai Testnet: ${error.message}`)
+    }
+
+    try {
+      addCustomNetwork({ customL2Network: nscTestnet })
+    } catch (error: any) {
+      console.error(`Failed to register NSC Testnet: ${error.message}`)
+    }
+    try {
+      addCustomChain({ customChain: nscTestnet })
+    } catch (error: any) {
+      console.error(`Failed to register NSC Testnet: ${error.message}`)
     }
 
     try {
