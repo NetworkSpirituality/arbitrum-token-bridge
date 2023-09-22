@@ -1,1478 +1,1170 @@
-import { useState, useMemo, useEffect, useCallback } from 'react'
-import Tippy from '@tippyjs/react'
-import { BigNumber, constants, utils } from 'ethers'
-import { isAddress } from 'ethers/lib/utils'
-import { useLatest } from 'react-use'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { ChevronDownIcon, ArrowsUpDownIcon } from '@heroicons/react/24/outline'
+import { Loader } from '../common/atoms/Loader'
 import { twMerge } from 'tailwind-merge'
-import * as Sentry from '@sentry/react'
-import { useAccount, useProvider, useSigner } from 'wagmi'
-import { ERC20__factory } from '@arbitrum/sdk/dist/lib/abi/factories/ERC20__factory'
-import { JsonRpcProvider } from '@ethersproject/providers'
+import { BigNumber, constants, utils } from 'ethers'
 
-import { useAppState } from '../../state'
-import { ConnectionState } from '../../util'
-import { getNetworkName, isNetwork } from '../../util/networks'
-import { Button } from '../common/Button'
-import {
-  TokenDepositCheckDialog,
-  TokenDepositCheckDialogType
-} from './TokenDepositCheckDialog'
-import { TokenImportDialog } from './TokenImportDialog'
-import { isWithdrawOnlyToken } from '../../util/WithdrawOnlyUtils'
+import * as Sentry from '@sentry/react'
+import { Chain, useAccount } from 'wagmi'
+
+import { useActions, useAppState } from '../../state'
 import { useNetworksAndSigners } from '../../hooks/useNetworksAndSigners'
-import { useArbQueryParams } from '../../hooks/useArbQueryParams'
-import { useDialog } from '../common/Dialog'
-import { TokenApprovalDialog } from './TokenApprovalDialog'
-import { WithdrawalConfirmationDialog } from './WithdrawalConfirmationDialog'
-import { DepositConfirmationDialog } from './DepositConfirmationDialog'
-import { TransferPanelSummary, useGasSummary } from './TransferPanelSummary'
-import { useAppContextActions, useAppContextState } from '../App/AppContext'
-import { trackEvent, shouldTrackAnalytics } from '../../util/AnalyticsUtils'
+import { formatAmount } from '../../util/NumberUtils'
 import {
-  TransferPanelMain,
-  TransferPanelMainErrorMessage
-} from './TransferPanelMain'
-import { useIsSwitchingL2Chain } from './TransferPanelMainUtils'
-import { NonCanonicalTokensBridgeInfo } from '../../util/fastBridges'
-import { tokenRequiresApprovalOnL2 } from '../../util/L2ApprovalUtils'
+  ChainId,
+  getCustomChainFromLocalStorageById,
+  getExplorerUrl,
+  getL2ChainIds,
+  isNetwork
+} from '../../util/networks'
+import { getWagmiChain } from '../../util/wagmi/getWagmiChain'
 import {
-  getL1TokenAllowance,
-  getL2ERC20Address,
-  getL2GatewayAddress,
-  getTokenAllowanceForSpender,
-  isTokenArbitrumGoerliNativeUSDC,
-  isTokenArbitrumOneNativeUSDC,
-  isTokenGoerliUSDC,
-  isTokenMainnetUSDC
-} from '../../util/TokenUtils'
+  AdvancedSettings,
+  useDestinationAddressStore
+} from './AdvancedSettings'
+import { ExternalLink } from '../common/ExternalLink'
+import { Dialog, useDialog } from '../common/Dialog'
+import {
+  AmountQueryParamEnum,
+  useArbQueryParams
+} from '../../hooks/useArbQueryParams'
+
+import { TransferPanelMainInput } from './TransferPanelMainInput'
+import {
+  calculateEstimatedL1GasFees,
+  calculateEstimatedL2GasFees,
+  useIsSwitchingL2Chain
+} from './TransferPanelMainUtils'
+import { isUserRejectedError } from '../../util/isUserRejectedError'
 import { useBalance } from '../../hooks/useBalance'
+import { useGasPrice } from '../../hooks/useGasPrice'
+import { ERC20BridgeToken, TokenType } from '../../hooks/arbTokenBridge.types'
 import { useSwitchNetworkWithConfig } from '../../hooks/useSwitchNetworkWithConfig'
 import { useIsConnectedToArbitrum } from '../../hooks/useIsConnectedToArbitrum'
 import { useIsConnectedToOrbitChain } from '../../hooks/useIsConnectedToOrbitChain'
-import { errorToast, warningToast } from '../common/atoms/Toast'
-import { ExternalLink } from '../common/ExternalLink'
 import { useAccountType } from '../../hooks/useAccountType'
-import { DOCS_DOMAIN, GET_HELP_LINK } from '../../constants'
+import { depositEthEstimateGas } from '../../util/EthDepositUtils'
+import { withdrawEthEstimateGas } from '../../util/EthWithdrawalUtils'
+import { GasEstimates } from '../../hooks/arbTokenBridge.types'
+import { CommonAddress } from '../../util/CommonAddressUtils'
 import {
-  getDestinationAddressError,
-  useDestinationAddressStore
-} from './AdvancedSettings'
-import { USDCDepositConfirmationDialog } from './USDCDeposit/USDCDepositConfirmationDialog'
-import { USDCWithdrawalConfirmationDialog } from './USDCWithdrawal/USDCWithdrawalConfirmationDialog'
-import { fetchPerMessageBurnLimit } from '../../hooks/CCTP/fetchCCTPLimits'
-import { isUserRejectedError } from '../../util/isUserRejectedError'
-import { formatAmount } from '../../util/NumberUtils'
-import {
-  getUsdcTokenAddressFromSourceChainId,
-  useCctpState
-} from '../../state/cctpState'
-import { getAttestationHashAndMessageFromReceipt } from '../../util/cctp/getAttestationHashAndMessageFromReceipt'
-import { DepositStatus } from '../../state/app/state'
-import { getStandardizedTimestamp } from '../../state/app/utils'
-import { getContracts, useCCTP } from '../../hooks/CCTP/useCCTP'
+  isTokenArbitrumGoerliNativeUSDC,
+  isTokenArbitrumOneNativeUSDC,
+  isTokenGoerliUSDC,
+  isTokenMainnetUSDC,
+  sanitizeTokenSymbol
+} from '../../util/TokenUtils'
+import { ETH_BALANCE_ARTICLE_LINK, USDC_LEARN_MORE_LINK } from '../../constants'
+import { NetworkListbox, NetworkListboxProps } from './NetworkListbox'
+import { shortenAddress } from '../../util/CommonUtils'
+import { OneNovaTransferDialog } from './OneNovaTransferDialog'
+import { useUpdateUSDCBalances } from '../../hooks/CCTP/useUpdateUSDCBalances'
+import { useChainLayers } from '../../hooks/useChainLayers'
 
-const onTxError = (error: any) => {
-  if (error.code !== 'ACTION_REJECTED') {
-    Sentry.captureException(error)
-  }
+enum NetworkType {
+  l1 = 'l1',
+  l2 = 'l2'
 }
 
-const isAllowedL2 = async ({
-  l1TokenAddress,
-  l2TokenAddress,
-  walletAddress,
-  amountNeeded,
-  l2Provider
-}: {
-  l1TokenAddress: string
-  l2TokenAddress: string
-  walletAddress: string
-  amountNeeded: BigNumber
-  l2Provider: JsonRpcProvider
-}) => {
-  const token = ERC20__factory.connect(l2TokenAddress, l2Provider)
-
-  const gatewayAddress = await getL2GatewayAddress({
-    erc20L1Address: l1TokenAddress,
-    l2Provider
-  })
-
-  return (await token.allowance(walletAddress, gatewayAddress)).gte(
-    amountNeeded
-  )
-}
-
-function useTokenFromSearchParams(): string | undefined {
-  const [{ token: tokenFromSearchParams }] = useArbQueryParams()
-
-  if (!tokenFromSearchParams) {
-    return undefined
-  }
-
-  if (!isAddress(tokenFromSearchParams)) {
-    return undefined
-  }
-
-  return tokenFromSearchParams
-}
-
-enum ImportTokenModalStatus {
-  // "IDLE" is here to distinguish between the modal never being opened, and being closed after a user interaction
-  IDLE,
-  OPEN,
-  CLOSED
-}
-
-const networkConnectionWarningToast = () =>
-  warningToast(
-    <>
-      Network connection issue. Please contact{' '}
-      <ExternalLink href={GET_HELP_LINK} className="underline">
-        support
-      </ExternalLink>
-      .
-    </>
-  )
-
-export function TransferPanel() {
-  const tokenFromSearchParams = useTokenFromSearchParams()
-
-  const [tokenDepositCheckDialogType, setTokenDepositCheckDialogType] =
-    useState<TokenDepositCheckDialogType>('new-token')
-  const [importTokenModalStatus, setImportTokenModalStatus] =
-    useState<ImportTokenModalStatus>(ImportTokenModalStatus.IDLE)
-  const [showSCWalletTooltip, setShowSCWalletTooltip] = useState(false)
-
+export function SwitchNetworksButton(
+  props: React.ButtonHTMLAttributes<HTMLButtonElement>
+) {
   const {
-    app: {
-      connectionState,
-      selectedToken,
-      isDepositMode,
-      arbTokenBridgeLoaded,
-      arbTokenBridge: { eth, token },
-      arbTokenBridge,
-      warningTokens
-    }
-  } = useAppState()
-  const { layout } = useAppContextState()
-  const { isTransferring } = layout
-  const { address: walletAddress, isConnected } = useAccount()
-  const provider = useProvider()
-  const { switchNetworkAsync } = useSwitchNetworkWithConfig({
-    isSwitchingNetworkBeforeTx: true
-  })
-  const latestConnectedProvider = useLatest(provider)
-
-  const networksAndSigners = useNetworksAndSigners()
-  const latestNetworksAndSigners = useLatest(networksAndSigners)
-  const {
-    l1: { network: l1Network, provider: l1Provider },
-    l2: { network: l2Network, provider: l2Provider }
-  } = networksAndSigners
-
-  const { isEOA, isSmartContractWallet } = useAccountType()
-
-  const { data: l1Signer } = useSigner({
-    chainId: l1Network.id
-  })
-  const { data: l2Signer } = useSigner({
-    chainId: l2Network.id
-  })
-
-  const { updateTransfer, setPendingTransfer } = useCctpState()
-
-  const { openTransactionHistoryPanel, setTransferring } =
-    useAppContextActions()
-
-  const { isMainnet } = isNetwork(l1Network.id)
-  const { isArbitrumNova } = isNetwork(l2Network.id)
-
-  const latestEth = useLatest(eth)
-  const latestToken = useLatest(token)
-
-  const isSwitchingL2Chain = useIsSwitchingL2Chain()
-  const isConnectedToArbitrum = useLatest(useIsConnectedToArbitrum())
-  const isConnectedToOrbitChain = useLatest(useIsConnectedToOrbitChain())
-
-  // Link the amount state directly to the amount in query params -  no need of useState
-  // Both `amount` getter and setter will internally be using `useArbQueryParams` functions
-  const [{ amount }, setQueryParams] = useArbQueryParams()
-  const amountNum = parseFloat(amount) // just a numerical variant of amount
-  const setAmount = useCallback(
-    (newAmount: string) => {
-      setQueryParams({ amount: newAmount })
-    },
-    [setQueryParams]
-  )
-
-  const { approveForBurn, depositForBurn } = useCCTP({
-    sourceChainId: isDepositMode
-      ? latestNetworksAndSigners.current.l1.network.id
-      : latestNetworksAndSigners.current.l2.network.id
-  })
-
-  const [tokenCheckDialogProps, openTokenCheckDialog] = useDialog()
-  const [tokenApprovalDialogProps, openTokenApprovalDialog] = useDialog()
-  const [withdrawalConfirmationDialogProps, openWithdrawalConfirmationDialog] =
-    useDialog()
-  const [depositConfirmationDialogProps, openDepositConfirmationDialog] =
-    useDialog()
-  const [
-    usdcWithdrawalConfirmationDialogProps,
-    openUSDCWithdrawalConfirmationDialog
-  ] = useDialog()
-  const [
-    usdcDepositConfirmationDialogProps,
-    openUSDCDepositConfirmationDialog
-  ] = useDialog()
-
-  const {
-    eth: [ethL1Balance],
-    erc20: [erc20L1Balances]
-  } = useBalance({ provider: l1Provider, walletAddress })
-  const {
-    eth: [ethL2Balance],
-    erc20: [erc20L2Balances]
-  } = useBalance({ provider: l2Provider, walletAddress })
-
-  const ethBalance = useMemo(() => {
-    return isDepositMode ? ethL1Balance : ethL2Balance
-  }, [ethL1Balance, ethL2Balance, isDepositMode])
-
-  const [allowance, setAllowance] = useState<BigNumber | null>(null)
-  const [isCctp, setIsCctp] = useState(false)
-
-  const { error: destinationAddressError, destinationAddress } =
-    useDestinationAddressStore()
-
-  function clearAmountInput() {
-    // clear amount input on transfer panel
-    setAmount('')
-  }
-
-  useEffect(() => {
-    if (importTokenModalStatus !== ImportTokenModalStatus.IDLE) {
-      return
-    }
-
-    if (
-      connectionState === ConnectionState.L1_CONNECTED ||
-      connectionState === ConnectionState.L2_CONNECTED
-    ) {
-      setImportTokenModalStatus(ImportTokenModalStatus.OPEN)
-    }
-  }, [connectionState, importTokenModalStatus])
-
-  useEffect(() => {
-    // Check in case of an account switch or network switch
-    if (typeof walletAddress === 'undefined') {
-      return
-    }
-
-    // Don't open when the token import dialog should open
-    if (typeof tokenFromSearchParams !== 'undefined') {
-      return
-    }
-
-    if (!ethL1Balance) {
-      return
-    }
-  }, [
-    ethL1Balance,
-    walletAddress,
-    isMainnet,
-    isDepositMode,
-    arbTokenBridge,
-    tokenFromSearchParams
-  ])
-
-  const l1Balance = useMemo(() => {
-    if (selectedToken) {
-      const balanceL1 = erc20L1Balances?.[selectedToken.address.toLowerCase()]
-      const { decimals } = selectedToken
-      if (!balanceL1 || !decimals) {
-        return null
-      }
-      return utils.formatUnits(balanceL1, decimals)
-    }
-
-    if (!ethL1Balance) {
-      return null
-    }
-    return utils.formatUnits(ethL1Balance, 18)
-  }, [ethL1Balance, erc20L1Balances, selectedToken])
-
-  const l2Balance = useMemo(() => {
-    if (selectedToken) {
-      const addressLookup =
-        isTokenArbitrumOneNativeUSDC(selectedToken.address) ||
-        isTokenArbitrumGoerliNativeUSDC(selectedToken.address)
-          ? selectedToken.address.toLowerCase()
-          : (selectedToken.l2Address || '').toLowerCase()
-
-      const balanceL2 = erc20L2Balances?.[addressLookup]
-      const { decimals } = selectedToken
-
-      if (!balanceL2) {
-        return null
-      }
-      return utils.formatUnits(balanceL2, decimals)
-    }
-
-    if (!ethL2Balance) {
-      return null
-    }
-    return utils.formatUnits(ethL2Balance, 18)
-  }, [ethL2Balance, erc20L2Balances, selectedToken])
-
-  const isBridgingANewStandardToken = useMemo(() => {
-    const isConnected = typeof l1Network !== 'undefined'
-    const isUnbridgedToken =
-      selectedToken !== null && typeof selectedToken.l2Address === 'undefined'
-
-    return isConnected && isDepositMode && isUnbridgedToken
-  }, [l1Network, isDepositMode, selectedToken])
-
-  const isNonCanonicalToken = useMemo(() => {
-    if (selectedToken) {
-      return Object.keys(NonCanonicalTokensBridgeInfo)
-        .map(key => key.toLowerCase())
-        .includes(selectedToken.address.toLowerCase())
-    }
-    return false
-  }, [selectedToken])
-
-  async function depositToken() {
-    if (!selectedToken) {
-      throw new Error('Invalid app state: no selected token')
-    }
-
-    function getDialogType(): TokenDepositCheckDialogType | null {
-      let type: TokenDepositCheckDialogType | null = null
-
-      if (isBridgingANewStandardToken) {
-        type = 'new-token'
-      } else {
-        const isUserAddedToken =
-          selectedToken &&
-          selectedToken?.listIds.size === 0 &&
-          typeof selectedToken.l2Address === 'undefined'
-
-        if (isUserAddedToken) {
-          type = 'user-added-token'
-        }
-      }
-
-      return type
-    }
-
-    // Check if we need to show `TokenDepositCheckDialog` for first-time bridging
-    const dialogType = getDialogType()
-
-    if (dialogType) {
-      setTokenDepositCheckDialogType(dialogType)
-
-      const waitForInput = openTokenCheckDialog()
-      const [confirmed] = await waitForInput()
-
-      if (confirmed) {
-        transfer()
-      }
-    } else {
-      transfer()
-    }
-  }
-
-  const amountBigNumber = useMemo(() => {
-    try {
-      return utils.parseUnits(amount || '0', selectedToken?.decimals ?? 18)
-    } catch (error) {
-      return constants.Zero
-    }
-  }, [amount, selectedToken])
-
-  // SC wallet transfer requests are sent immediately, delay it to give user an impression of a tx sent
-  const showDelayedSCTxRequest = () =>
-    setTimeout(() => {
-      setTransferring(false)
-      setShowSCWalletTooltip(true)
-    }, 3000)
-
-  const transferCctp = async (type: 'deposits' | 'withdrawals') => {
-    if (!selectedToken) {
-      return
-    }
-    if (!walletAddress) {
-      return
-    }
-    const isDeposit = type === 'deposits'
-    const signer = isDeposit ? l1Signer : l2Signer
-    if (!signer) {
-      throw 'Signer is undefined'
-    }
-
-    setTransferring(true)
-    let currentNetwork = isDeposit
-      ? latestNetworksAndSigners.current.l1.network
-      : latestNetworksAndSigners.current.l2.network
-
-    const currentNetworkName = getNetworkName(currentNetwork.id)
-    const isConnectedToTheWrongChain =
-      (isDeposit && isConnectedToArbitrum.current) ||
-      (type === 'withdrawals' && !isConnectedToArbitrum.current)
-
-    if (isConnectedToTheWrongChain) {
-      if (shouldTrackAnalytics(currentNetworkName)) {
-        trackEvent('Switch Network and Transfer', {
-          type: isDeposit ? 'Deposit' : 'Withdrawal',
-          tokenSymbol: 'USDC',
-          assetType: 'ERC-20',
-          accountType: isSmartContractWallet ? 'Smart Contract' : 'EOA',
-          network: currentNetworkName,
-          amount: Number(amount)
-        })
-      }
-      const switchTargetChainId = isDeposit
-        ? latestNetworksAndSigners.current.l1.network.id
-        : latestNetworksAndSigners.current.l2.network.id
-      try {
-        await switchNetworkAsync?.(switchTargetChainId)
-        currentNetwork = isDeposit
-          ? latestNetworksAndSigners.current.l1.network
-          : latestNetworksAndSigners.current.l2.network
-      } catch (e) {
-        if (isUserRejectedError(e)) {
-          return
-        }
-      }
-    }
-
-    try {
-      const l1ChainID = latestNetworksAndSigners.current.l1.network.id
-      const l2ChainID = latestNetworksAndSigners.current.l2.network.id
-      const sourceChainId = isDeposit ? l1ChainID : l2ChainID
-
-      const waitForInput = isDeposit
-        ? openUSDCDepositConfirmationDialog()
-        : openUSDCWithdrawalConfirmationDialog()
-      const [confirmed, primaryButtonClicked] = await waitForInput()
-
-      if (!confirmed) {
-        return
-      }
-      if (isDeposit && primaryButtonClicked === 'bridged') {
-        // User has selected normal bridge (USDC.e)
-        depositToken()
-        return
-      }
-
-      // CCTP has an upper limit for transfer
-      const burnLimit = await fetchPerMessageBurnLimit({
-        sourceChainId
-      })
-
-      if (burnLimit.lte(amountBigNumber)) {
-        const formatedLimit = formatAmount(burnLimit, {
-          decimals: selectedToken.decimals,
-          symbol: 'USDC'
-        })
-        errorToast(
-          `The limit for transfers using CCTP is ${formatedLimit}. Please lower your amount and try again.`
-        )
-        return
-      }
-
-      const recipient = destinationAddress || walletAddress
-      const { usdcContractAddress, tokenMessengerContractAddress } =
-        getContracts(sourceChainId)
-
-      const allowance = await getTokenAllowanceForSpender({
-        account: walletAddress,
-        erc20Address: usdcContractAddress,
-        provider: type === 'deposits' ? l1Provider : l2Provider,
-        spender: tokenMessengerContractAddress
-      })
-
-      if (allowance.lt(amountBigNumber)) {
-        setAllowance(allowance)
-        setIsCctp(true)
-        const waitForInput = openTokenApprovalDialog()
-        const [confirmed] = await waitForInput()
-
-        if (!confirmed) {
-          return
-        }
-
-        try {
-          if (isSmartContractWallet) {
-            showDelayedSCTxRequest()
-          }
-          const tx = await approveForBurn(amountBigNumber, signer)
-          await tx.wait()
-        } catch (error) {
-          if (isUserRejectedError(error)) {
-            return
-          }
-          Sentry.captureException(error)
-          errorToast(
-            `USDC approval transaction failed: ${
-              (error as Error)?.message ?? error
-            }`
-          )
-          return
-        }
-      }
-
-      let depositForBurnTx
-      try {
-        if (isSmartContractWallet) {
-          showDelayedSCTxRequest()
-        }
-        depositForBurnTx = await depositForBurn({
-          amount: amountBigNumber,
-          signer,
-          recipient: destinationAddress || walletAddress
-        })
-      } catch (error) {
-        if (isUserRejectedError(error)) {
-          return
-        }
-        Sentry.captureException(error)
-        errorToast(
-          `USDC deposit transaction failed: ${
-            (error as Error)?.message ?? error
-          }`
-        )
-      }
-
-      if (isSmartContractWallet) {
-        // For SCW, we assume that the transaction went through
-        if (shouldTrackAnalytics(currentNetworkName)) {
-          trackEvent(isDeposit ? 'CCTP Deposit' : 'CCTP Withdrawal', {
-            accountType: 'Smart Contract',
-            network: currentNetworkName,
-            amount: Number(amount),
-            complete: false
-          })
-        }
-        return
-      }
-
-      if (!depositForBurnTx) {
-        return
-      }
-
-      if (shouldTrackAnalytics(currentNetworkName)) {
-        trackEvent(isDeposit ? 'CCTP Deposit' : 'CCTP Withdrawal', {
-          accountType: 'EOA',
-          network: currentNetworkName,
-          amount: Number(amount),
-          complete: false
-        })
-      }
-      setPendingTransfer({
-        txId: depositForBurnTx.hash,
-        asset: 'USDC',
-        blockNum: null,
-        createdAt: getStandardizedTimestamp(new Date().toString()),
-        direction: isDeposit ? 'deposit' : 'withdraw',
-        isWithdrawal: !isDeposit,
-        resolvedAt: null,
-        status: 'pending',
-        uniqueId: null,
-        value: amount,
-        depositStatus: DepositStatus.CCTP_DEFAULT_STATE,
-        destination: recipient,
-        sender: walletAddress,
-        isCctp: true,
-        tokenAddress: getUsdcTokenAddressFromSourceChainId(sourceChainId),
-        cctpData: {
-          sourceChainId,
-          attestationHash: null,
-          messageBytes: null,
-          receiveMessageTransactionHash: null,
-          receiveMessageTimestamp: null
-        }
-      })
-      openTransactionHistoryPanel()
-      setTransferring(false)
-      clearAmountInput()
-
-      const depositTxReceipt = await depositForBurnTx.wait()
-      const { messageBytes, attestationHash } =
-        getAttestationHashAndMessageFromReceipt(depositTxReceipt)
-
-      if (depositTxReceipt.status === 0) {
-        errorToast('USDC deposit transaction failed')
-        return
-      }
-
-      if (messageBytes && attestationHash) {
-        updateTransfer({
-          txId: depositForBurnTx.hash,
-          blockNum: depositTxReceipt.blockNumber,
-          status: 'Unconfirmed',
-          cctpData: {
-            attestationHash,
-            messageBytes
-          }
-        })
-      }
-    } catch (e) {
-    } finally {
-      setTransferring(false)
-      setIsCctp(false)
-    }
-  }
-
-  const transfer = async () => {
-    const signerUndefinedError = 'Signer is undefined'
-
-    if (!isConnected) {
-      return
-    }
-    if (!walletAddress) {
-      return
-    }
-
-    const hasBothSigners = l1Signer && l2Signer
-    if (isEOA && !hasBothSigners) {
-      throw signerUndefinedError
-    }
-
-    const destinationAddressError = await getDestinationAddressError({
-      destinationAddress,
-      isSmartContractWallet
-    })
-    if (destinationAddressError) {
-      console.error(destinationAddressError)
-      return
-    }
-
-    // SC ETH transfers aren't enabled yet. Safety check, shouldn't be able to get here.
-    if (isSmartContractWallet && !selectedToken) {
-      console.error("ETH transfers aren't enabled for smart contract wallets.")
-      return
-    }
-
-    // Make sure Ethereum and/or Orbit chains are not selected as a pair.
-    const ethereumOrOrbitPairsSelected = [l1Network.id, l2Network.id].every(
-      id => {
-        const { isEthereum, isOrbitChain } = isNetwork(id)
-        return isEthereum || isOrbitChain
-      }
-    )
-    if (ethereumOrOrbitPairsSelected) {
-      console.error('Cannot transfer funds between L1 and/or Orbit chains.')
-      return
-    }
-
-    const l2NetworkName = getNetworkName(l2Network.id)
-
-    setTransferring(true)
-
-    try {
-      if (isDepositMode) {
-        if (!l1Signer) {
-          throw signerUndefinedError
-        }
-
-        const warningToken =
-          selectedToken && warningTokens[selectedToken.address.toLowerCase()]
-        if (warningToken) {
-          const description = (() => {
-            switch (warningToken.type) {
-              case 0:
-                return 'a supply rebasing token'
-              case 1:
-                return 'an interest accruing token'
-              default:
-                return 'a non-standard ERC20 token'
-            }
-          })()
-          return window.alert(
-            `${selectedToken?.address} is ${description}; it will likely have unusual behavior when deployed as as standard token to Arbitrum. It is not recommended that you deploy it. (See ${DOCS_DOMAIN}/for-devs/concepts/token-bridge/token-bridge-erc20 for more info.)`
-          )
-        }
-
-        const isParentChainEthereum = isNetwork(l1Network.id).isEthereum
-        // Only switch to L1 if the selected L1 network is Ethereum.
-        // Or if connected to an Orbit chain as it can't make deposits.
-        if (
-          (isConnectedToArbitrum.current && isParentChainEthereum) ||
-          isConnectedToOrbitChain.current
-        ) {
-          if (shouldTrackAnalytics(l2NetworkName)) {
-            trackEvent('Switch Network and Transfer', {
-              type: 'Deposit',
-              tokenSymbol: selectedToken?.symbol,
-              assetType: selectedToken ? 'ERC-20' : 'ETH',
-              accountType: isSmartContractWallet ? 'Smart Contract' : 'EOA',
-              network: l2NetworkName,
-              amount: Number(amount)
-            })
-          }
-          await switchNetworkAsync?.(
-            latestNetworksAndSigners.current.l1.network.id
-          )
-
-          while (
-            (isConnectedToArbitrum.current && isParentChainEthereum) ||
-            isConnectedToOrbitChain.current ||
-            !latestEth.current ||
-            !arbTokenBridgeLoaded
-          ) {
-            await new Promise(r => setTimeout(r, 100))
-          }
-
-          await new Promise(r => setTimeout(r, 3000))
-        }
-
-        const l1ChainID = latestNetworksAndSigners.current.l1.network.id
-        const connectedChainID =
-          latestConnectedProvider.current?.network?.chainId
-        const l1ChainEqualsConnectedChain =
-          l1ChainID && connectedChainID && l1ChainID === connectedChainID
-
-        if (!l1ChainEqualsConnectedChain || isConnectedToOrbitChain.current) {
-          // Deposit is invalid if the connected chain doesn't match L1...
-          // ...or if connected to an Orbit chain, as it can't make deposits.
-          return networkConnectionWarningToast()
-        }
-        if (selectedToken) {
-          const { decimals } = selectedToken
-          const amountRaw = utils.parseUnits(amount, decimals)
-
-          // check that a registration is not currently in progress
-          const l2RoutedAddress = await getL2ERC20Address({
-            erc20L1Address: selectedToken.address,
-            l1Provider,
-            l2Provider
-          })
-
-          if (
-            selectedToken.l2Address &&
-            selectedToken.l2Address.toLowerCase() !==
-              l2RoutedAddress.toLowerCase()
-          ) {
-            alert(
-              'Depositing is currently suspended for this token as a new gateway is being registered. Please try again later and contact support if this issue persists.'
-            )
-            return
-          }
-
-          if (isNonCanonicalToken) {
-            const waitForInput = openDepositConfirmationDialog()
-            const [confirmed] = await waitForInput()
-
-            if (!confirmed) {
-              return
-            }
-          }
-
-          const allowance = await getL1TokenAllowance({
-            account: walletAddress,
-            erc20L1Address: selectedToken.address,
-            l1Provider: l1Provider,
-            l2Provider: l2Provider
-          })
-
-          if (!allowance.gte(amountRaw)) {
-            setAllowance(allowance)
-            const waitForInput = openTokenApprovalDialog()
-            const [confirmed] = await waitForInput()
-
-            if (!confirmed) {
-              return false
-            }
-            await latestToken.current.approve({
-              erc20L1Address: selectedToken.address,
-              l1Signer
-            })
-          }
-
-          if (isSmartContractWallet) {
-            showDelayedSCTxRequest()
-            // we can't call this inside the deposit method because tx is executed in an external app
-            if (shouldTrackAnalytics(l2NetworkName)) {
-              trackEvent('Deposit', {
-                tokenSymbol: selectedToken.symbol,
-                assetType: 'ERC-20',
-                accountType: 'Smart Contract',
-                network: l2NetworkName,
-                amount: Number(amount)
-              })
-            }
-          }
-
-          await latestToken.current.deposit({
-            erc20L1Address: selectedToken.address,
-            amount: amountRaw,
-            l1Signer,
-            destinationAddress,
-            txLifecycle: {
-              onTxSubmit: () => {
-                openTransactionHistoryPanel()
-                setTransferring(false)
-                clearAmountInput()
-                if (
-                  !isSmartContractWallet &&
-                  shouldTrackAnalytics(l2NetworkName)
-                ) {
-                  trackEvent('Deposit', {
-                    tokenSymbol: selectedToken.symbol,
-                    assetType: 'ERC-20',
-                    accountType: 'EOA',
-                    network: l2NetworkName,
-                    amount: Number(amount)
-                  })
-                }
-              },
-              onTxError
-            }
-          })
-        } else {
-          const amountRaw = utils.parseUnits(amount, 18)
-
-          await latestEth.current.deposit({
-            amount: amountRaw,
-            l1Signer,
-            txLifecycle: {
-              onTxSubmit: () => {
-                openTransactionHistoryPanel()
-                setTransferring(false)
-                clearAmountInput()
-                if (
-                  !isSmartContractWallet &&
-                  shouldTrackAnalytics(l2NetworkName)
-                ) {
-                  trackEvent('Deposit', {
-                    assetType: 'ETH',
-                    accountType: 'EOA',
-                    network: l2NetworkName,
-                    amount: Number(amount)
-                  })
-                }
-              },
-              onTxError
-            }
-          })
-        }
-      } else {
-        if (!l2Signer) {
-          throw signerUndefinedError
-        }
-
-        const isConnectedToEthereum =
-          !isConnectedToArbitrum.current && !isConnectedToOrbitChain.current
-        const { isOrbitChain } = isNetwork(l2Network.id)
-
-        if (
-          isConnectedToEthereum ||
-          (isConnectedToArbitrum.current && isOrbitChain)
-        ) {
-          if (shouldTrackAnalytics(l2NetworkName)) {
-            trackEvent('Switch Network and Transfer', {
-              type: 'Withdrawal',
-              tokenSymbol: selectedToken?.symbol,
-              assetType: selectedToken ? 'ERC-20' : 'ETH',
-              accountType: isSmartContractWallet ? 'Smart Contract' : 'EOA',
-              network: l2NetworkName,
-              amount: Number(amount)
-            })
-          }
-          await switchNetworkAsync?.(
-            latestNetworksAndSigners.current.l2.network.id
-          )
-
-          while (
-            (!isConnectedToArbitrum.current &&
-              !isConnectedToOrbitChain.current) ||
-            (isConnectedToArbitrum.current && isOrbitChain) ||
-            !latestEth.current ||
-            !arbTokenBridgeLoaded
-          ) {
-            await new Promise(r => setTimeout(r, 100))
-          }
-
-          await new Promise(r => setTimeout(r, 3000))
-        }
-
-        if (!isSmartContractWallet) {
-          const waitForInput = openWithdrawalConfirmationDialog()
-          const [confirmed] = await waitForInput()
-
-          if (!confirmed) {
-            return
-          }
-        }
-
-        const l2ChainID = latestNetworksAndSigners.current.l2.network.id
-        const connectedChainID =
-          latestConnectedProvider.current?.network?.chainId
-        if (
-          !(l2ChainID && connectedChainID && +l2ChainID === connectedChainID)
-        ) {
-          return networkConnectionWarningToast()
-        }
-
-        if (selectedToken) {
-          const { decimals } = selectedToken
-          const amountRaw = utils.parseUnits(amount, decimals)
-
-          if (
-            tokenRequiresApprovalOnL2(selectedToken.address, l2ChainID) &&
-            selectedToken.l2Address
-          ) {
-            const allowed = await isAllowedL2({
-              l1TokenAddress: selectedToken.address,
-              l2TokenAddress: selectedToken.l2Address,
-              walletAddress,
-              amountNeeded: amountRaw,
-              l2Provider: latestNetworksAndSigners.current.l2.provider
-            })
-            if (!allowed) {
-              if (isSmartContractWallet) {
-                showDelayedSCTxRequest()
-              }
-
-              await latestToken.current.approveL2({
-                erc20L1Address: selectedToken.address,
-                l2Signer
-              })
-            }
-          }
-
-          if (isSmartContractWallet) {
-            showDelayedSCTxRequest()
-            // we can't call this inside the withdraw method because tx is executed in an external app
-            if (shouldTrackAnalytics(l2NetworkName)) {
-              trackEvent('Withdraw', {
-                tokenSymbol: selectedToken.symbol,
-                assetType: 'ERC-20',
-                accountType: 'Smart Contract',
-                network: l2NetworkName,
-                amount: Number(amount)
-              })
-            }
-          }
-
-          await latestToken.current.withdraw({
-            erc20L1Address: selectedToken.address,
-            amount: amountRaw,
-            l2Signer,
-            destinationAddress,
-            txLifecycle: {
-              onTxSubmit: () => {
-                openTransactionHistoryPanel()
-                setTransferring(false)
-                clearAmountInput()
-                if (
-                  !isSmartContractWallet &&
-                  shouldTrackAnalytics(l2NetworkName)
-                ) {
-                  trackEvent('Withdraw', {
-                    tokenSymbol: selectedToken.symbol,
-                    assetType: 'ERC-20',
-                    accountType: 'EOA',
-                    network: l2NetworkName,
-                    amount: Number(amount)
-                  })
-                }
-              },
-              onTxError
-            }
-          })
-        } else {
-          const amountRaw = utils.parseUnits(amount, 18)
-
-          await latestEth.current.withdraw({
-            amount: amountRaw,
-            l2Signer,
-            txLifecycle: {
-              onTxSubmit: () => {
-                openTransactionHistoryPanel()
-                setTransferring(false)
-                clearAmountInput()
-                if (
-                  !isSmartContractWallet &&
-                  shouldTrackAnalytics(l2NetworkName)
-                ) {
-                  trackEvent('Withdraw', {
-                    assetType: 'ETH',
-                    accountType: 'EOA',
-                    network: l2NetworkName,
-                    amount: Number(amount)
-                  })
-                }
-              },
-              onTxError
-            }
-          })
-        }
-      }
-    } catch (ex) {
-      console.log(ex)
-    } finally {
-      setTransferring(false)
-    }
-  }
-
-  // Only run gas estimation when it makes sense, i.e. when there is enough funds
-  const shouldRunGasEstimation = useMemo(
-    () =>
-      isDepositMode
-        ? Number(amount) <= Number(l1Balance)
-        : Number(amount) <= Number(l2Balance),
-    [isDepositMode, l1Balance, amount, l2Balance]
-  )
-
-  const gasSummary = useGasSummary(
-    amountBigNumber,
-    selectedToken,
-    shouldRunGasEstimation
-  )
-  const { status: gasEstimationStatus } = gasSummary
-
-  const requiredGasFees = useMemo(
-    // For SC wallets, the relayer pays the gas fees so we don't need to check in that case
-    () => {
-      if (isSmartContractWallet) {
-        if (isDepositMode) {
-          // L2 fee is paid in callvalue and still need to come from the wallet for retryable cost estimation to succeed
-          return gasSummary.estimatedL2GasFees
-        }
-        return 0
-      }
-      return gasSummary.estimatedTotalGasFees
-    },
-    [isSmartContractWallet, isDepositMode, gasSummary]
-  )
-
-  const getErrorMessage = useCallback(
-    (
-      _amountEntered: string,
-      _balance: string | null
-    ): TransferPanelMainErrorMessage | undefined => {
-      // No error while loading balance
-      if (_balance === null || ethBalance === null) {
-        return undefined
-      }
-
-      // ETH transfers using SC wallets not enabled yet
-      if (isSmartContractWallet && !selectedToken) {
-        return TransferPanelMainErrorMessage.SC_WALLET_ETH_NOT_SUPPORTED
-      }
-
-      if (
-        isDepositMode &&
-        selectedToken &&
-        isWithdrawOnlyToken(selectedToken.address, l2Network.id)
-      ) {
-        return TransferPanelMainErrorMessage.WITHDRAW_ONLY
-      }
-
-      const amountEntered = Number(_amountEntered)
-      const balance = Number(_balance)
-
-      if (amountEntered > balance) {
-        return TransferPanelMainErrorMessage.INSUFFICIENT_FUNDS
-      }
-
-      // The amount entered is enough funds, but now let's include gas costs
-      switch (gasSummary.status) {
-        // No error while loading gas costs
-        case 'idle':
-        case 'loading':
-          return undefined
-
-        case 'error':
-          return TransferPanelMainErrorMessage.GAS_ESTIMATION_FAILURE
-
-        case 'success': {
-          if (selectedToken) {
-            // We checked if there's enough tokens above, but let's check if there's enough ETH for gas
-            const ethBalanceFloat = parseFloat(utils.formatEther(ethBalance))
-
-            if (requiredGasFees > ethBalanceFloat) {
-              return TransferPanelMainErrorMessage.INSUFFICIENT_FUNDS
-            }
-
-            return undefined
-          }
-
-          if (amountEntered + requiredGasFees > balance) {
-            return TransferPanelMainErrorMessage.INSUFFICIENT_FUNDS
-          }
-
-          return undefined
-        }
-      }
-    },
-    [
-      gasSummary,
-      ethBalance,
-      selectedToken,
-      isDepositMode,
-      l2Network,
-      requiredGasFees,
-      isSmartContractWallet
-    ]
-  )
-
-  const disableDepositAndWithdrawal = useMemo(() => {
-    if (!amountNum) return true
-    if (isTransferring) return true
-    if (isSwitchingL2Chain) return true
-    if (destinationAddressError) return true
-
-    if (isSmartContractWallet && !selectedToken) {
-      return true
-    }
-
-    // Keep the button disabled while loading gas summary
-    if (
-      !ethBalance ||
-      (gasSummary.status !== 'success' && gasSummary.status !== 'unavailable')
-    ) {
-      return true
-    }
-
-    return false
-  }, [
-    amountNum,
-    destinationAddressError,
+    isEOA,
     isSmartContractWallet,
-    ethBalance,
-    requiredGasFees,
-    gasSummary.status,
-    isSwitchingL2Chain,
-    isTransferring,
-    selectedToken
-  ])
+    isLoading: isLoadingAccountType
+  } = useAccountType()
 
-  const disableDeposit = useMemo(() => {
-    if (disableDepositAndWithdrawal) {
-      return true
+  return (
+    <button
+      type="button"
+      disabled={isSmartContractWallet || isLoadingAccountType}
+      className={twMerge(
+        'min-h-14 lg:min-h-16 min-w-14 lg:min-w-16 flex h-14 w-14 items-center justify-center rounded-full bg-white p-3 shadow-[0_0_4px_0_rgba(0,0,0,0.25)] transition duration-200 lg:h-16 lg:w-16 lg:p-4',
+        isEOA
+          ? 'hover:animate-rotate-180 focus-visible:animate-rotate-180 hover:bg-gray-1 focus-visible:ring-2 focus-visible:ring-gray-4 active:bg-gray-2'
+          : ''
+      )}
+      {...props}
+    >
+      {isSmartContractWallet ? (
+        <ChevronDownIcon className="text-dark" />
+      ) : (
+        <ArrowsUpDownIcon className="text-dark" />
+      )}
+    </button>
+  )
+}
+
+function getListboxOptionsFromL1Network(network: Chain) {
+  return getL2ChainIds(network.id).map(chainId => getWagmiChain(chainId))
+}
+
+function CustomAddressBanner({
+  network,
+  customAddress
+}: {
+  network: Chain
+  customAddress: string | undefined
+}) {
+  const { isArbitrum, isArbitrumNova } = isNetwork(network.id)
+
+  const bannerClassName = useMemo(() => {
+    if (!isArbitrum) {
+      return 'bg-cyan border-eth-dark'
     }
-
-    if (
-      selectedToken &&
-      isWithdrawOnlyToken(selectedToken.address, l2Network.id)
-    ) {
-      return true
-    }
-
-    if (isBridgingANewStandardToken) {
-      if (l1Balance === null || amountNum > Number(l1Balance)) {
-        return true
-      }
-    } else {
-      if (!l1Balance || amountNum > Number(l1Balance)) {
-        return true
-      }
-    }
-
-    if (selectedToken) {
-      if (!ethBalance) {
-        return true
-      }
-      // We checked if there's enough tokens, but let's check if there's enough ETH for gas
-      const ethBalanceFloat = parseFloat(utils.formatEther(ethBalance))
-      return requiredGasFees > ethBalanceFloat
-    }
-
-    return Number(amount) + requiredGasFees > Number(l1Balance)
-  }, [
-    disableDepositAndWithdrawal,
-    selectedToken,
-    l2Network.id,
-    isBridgingANewStandardToken,
-    amount,
-    requiredGasFees,
-    l1Balance,
-    amountNum,
-    ethBalance
-  ])
-
-  const disableWithdrawal = useMemo(() => {
-    if (disableDepositAndWithdrawal) {
-      return true
-    }
-
-    if (!l2Balance) return true
-    if (amountNum > Number(l2Balance)) return true
-
-    if (
-      selectedToken &&
-      [
-        '0x0e192d382a36de7011f795acc4391cd302003606',
-        '0x488cc08935458403a0458e45e20c0159c8ab2c92'
-      ].includes(selectedToken.address.toLowerCase())
-    ) {
-      return true
-    }
-
-    if (selectedToken) {
-      if (!ethBalance) {
-        return true
-      }
-      // We checked if there's enough tokens, but let's check if there's enough ETH for gas
-      const ethBalanceFloat = parseFloat(utils.formatEther(ethBalance))
-      return requiredGasFees > ethBalanceFloat
-    }
-
-    return Number(amount) + requiredGasFees > Number(l2Balance)
-  }, [
-    disableDepositAndWithdrawal,
-    l2Balance,
-    amountNum,
-    selectedToken,
-    amount,
-    requiredGasFees,
-    ethBalance
-  ])
-
-  const isSummaryVisible = useMemo(() => {
-    if (isSwitchingL2Chain || gasEstimationStatus === 'error') {
-      return false
-    }
-
-    if (isTransferring) {
-      return true
-    }
-
-    return !(isDepositMode ? disableDeposit : disableWithdrawal)
-  }, [
-    isSwitchingL2Chain,
-    gasEstimationStatus,
-    isTransferring,
-    isDepositMode,
-    disableDeposit,
-    disableWithdrawal
-  ])
-
-  const depositButtonColorClassName = useMemo(() => {
-    const { isArbitrum, isArbitrumNova, isXaiTestnet, isStylusTestnet } =
-      isNetwork(l2Network.id)
-
     if (isArbitrumNova) {
-      return 'bg-arb-nova-dark'
+      return 'bg-orange border-arb-nova-dark'
     }
+    return 'bg-cyan border-arb-one-dark'
+  }, [isArbitrum, isArbitrumNova])
 
-    if (isArbitrum) {
-      return 'bg-arb-one-dark'
-    }
+  if (!customAddress) {
+    return null
+  }
+
+  return (
+    <div
+      className={twMerge(
+        'w-full rounded-t-lg border-4 p-1 text-center text-sm',
+        bannerClassName
+      )}
+    >
+      <span>
+        Showing balance for Custom Destination Address:{' '}
+        <ExternalLink
+          className="arb-hover underline"
+          href={`${getExplorerUrl(network.id)}/address/${customAddress}`}
+        >
+          {shortenAddress(customAddress)}
+        </ExternalLink>
+      </span>
+    </div>
+  )
+}
+
+function NetworkContainer({
+  network,
+  customAddress,
+  children
+}: {
+  network: Chain
+  customAddress?: string
+  children: React.ReactNode
+}) {
+  const { address } = useAccount()
+  const { backgroundImage, backgroundClassName } = useMemo(() => {
+    const {
+      isArbitrum,
+      isArbitrumNova,
+      isOrbitChain,
+      isXaiTestnet,
+      isNscTestnet,
+      isStylusTestnet
+    } = isNetwork(network.id)
 
     if (isXaiTestnet) {
-      return 'bg-xai-dark'
+      return {
+        backgroundImage: `url('/images/XaiLogo.svg')`,
+        backgroundClassName: 'bg-xai-dark'
+      }
+    }
+
+    if (isNscTestnet) {
+      return {
+        backgroundImage: `url('/images/NscLogo.svg')`,
+        backgroundClassName: 'bg-nsc-dark'
+      }
     }
 
     if (isStylusTestnet) {
-      return 'bg-stylus-dark'
+      return {
+        backgroundImage: `url('/images/StylusLogo.svg')`,
+        backgroundClassName: 'bg-stylus-dark'
+      }
     }
 
-    // is Orbit chain
-    return 'bg-orbit-dark'
-  }, [l2Network.id])
-
-  const withdrawalButtonColorClassName = useMemo(() => {
-    const { isArbitrumNova: isParentChainArbitrumNova } = isNetwork(
-      l1Network.id
-    )
-    const { isArbitrum } = isNetwork(l2Network.id)
-
-    if (isArbitrum) {
-      return 'bg-eth-dark'
+    if (isOrbitChain) {
+      return {
+        backgroundImage: `url('/images/OrbitLogoWhite.svg')`,
+        backgroundClassName: 'bg-orbit-dark'
+      }
     }
 
-    // is Orbit chain
-    if (isParentChainArbitrumNova) {
-      return 'bg-arb-nova-dark'
+    if (!isArbitrum) {
+      return {
+        backgroundImage: `url('/images/TransparentEthereumLogo.webp')`,
+        backgroundClassName: 'bg-eth-dark'
+      }
     }
 
-    return 'bg-arb-one-dark'
-  }, [l1Network.id, l2Network.id])
+    if (isArbitrumNova) {
+      return {
+        backgroundImage: `url('/images/ArbitrumNovaLogo.svg')`,
+        backgroundClassName: 'bg-arb-nova-dark'
+      }
+    }
+
+    return {
+      backgroundImage: `url('/images/ArbitrumOneLogo.svg')`,
+      backgroundClassName: 'bg-arb-one-dark'
+    }
+  }, [network])
+
+  const walletAddressLowercased = address?.toLowerCase()
+
+  const showCustomAddressBanner = useMemo(() => {
+    if (!customAddress || !walletAddressLowercased) {
+      return false
+    }
+    if (customAddress === walletAddressLowercased) {
+      return false
+    }
+    return utils.isAddress(customAddress)
+  }, [customAddress, walletAddressLowercased])
 
   return (
     <>
-      <TokenApprovalDialog
-        {...tokenApprovalDialogProps}
-        amount={amount}
-        allowance={allowance}
-        token={selectedToken}
-        isCctp={isCctp}
-      />
-
-      <WithdrawalConfirmationDialog
-        {...withdrawalConfirmationDialogProps}
-        amount={amount}
-      />
-
-      <DepositConfirmationDialog
-        {...depositConfirmationDialogProps}
-        amount={amount}
-      />
-
-      <USDCWithdrawalConfirmationDialog
-        {...usdcWithdrawalConfirmationDialogProps}
-        amount={amount}
-      />
-
-      <USDCDepositConfirmationDialog
-        {...usdcDepositConfirmationDialogProps}
-        amount={amount}
-      />
-
-      <div className="flex max-w-screen-lg flex-col space-y-6 bg-white shadow-[0px_4px_20px_rgba(0,0,0,0.2)] lg:flex-row lg:space-x-6 lg:space-y-0 lg:rounded-xl">
-        <TransferPanelMain
-          amount={amount}
-          setAmount={setAmount}
-          errorMessage={
-            isDepositMode
-              ? getErrorMessage(amount, l1Balance)
-              : getErrorMessage(amount, l2Balance)
-          }
-        />
-
-        <div className="border-r border-gray-2" />
-
+      {showCustomAddressBanner && (
+        <CustomAddressBanner network={network} customAddress={customAddress} />
+      )}
+      <div
+        className={twMerge(
+          `relative rounded-xl p-1 transition-colors ${backgroundClassName}`,
+          showCustomAddressBanner ? 'rounded-t-none' : ''
+        )}
+      >
         <div
-          style={
-            isSummaryVisible
-              ? {}
-              : {
-                  background: `url(/images/ArbitrumFaded.webp)`,
-                  backgroundSize: 'contain',
-                  backgroundRepeat: 'no-repeat',
-                  backgroundPosition: 'center'
-                }
-          }
-          className="transfer-panel-stats flex w-full flex-col justify-between bg-gray-2 px-6 py-6 lg:rounded-br-xl lg:rounded-tr-xl lg:bg-white lg:px-0 lg:pr-6"
-        >
-          <div className="flex flex-col">
-            <div className="hidden lg:block">
-              <span className="text-2xl text-gray-dark">Summary</span>
-              <div className="h-4" />
-            </div>
-
-            {isSummaryVisible ? (
-              <TransferPanelSummary
-                amount={amountNum}
-                token={selectedToken}
-                gasSummary={gasSummary}
-              />
-            ) : (
-              <div className="hidden text-lg text-gray-dark lg:block lg:min-h-[297px]">
-                <span className="text-xl">
-                  Bridging summary will appear here.
-                </span>
-              </div>
-            )}
-          </div>
-
-          {isDepositMode ? (
-            <Button
-              variant="primary"
-              loading={isTransferring}
-              disabled={disableDeposit}
-              onClick={() => {
-                if (
-                  selectedToken &&
-                  (isTokenMainnetUSDC(selectedToken.address) ||
-                    isTokenGoerliUSDC(selectedToken.address)) &&
-                  !isArbitrumNova
-                ) {
-                  transferCctp('deposits')
-                } else if (selectedToken) {
-                  depositToken()
-                } else {
-                  transfer()
-                }
-              }}
-              className={twMerge(
-                'w-full bg-eth-dark py-4 text-lg lg:text-2xl',
-                depositButtonColorClassName
-              )}
-            >
-              <span className="block w-[360px] truncate">
-                {isSmartContractWallet && isTransferring
-                  ? 'Sending request...'
-                  : `Move funds to ${getNetworkName(l2Network.id)}`}
-              </span>
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              loading={isTransferring}
-              disabled={disableWithdrawal}
-              onClick={() => {
-                if (
-                  selectedToken &&
-                  (isTokenArbitrumOneNativeUSDC(selectedToken.address) ||
-                    isTokenArbitrumGoerliNativeUSDC(selectedToken.address))
-                ) {
-                  transferCctp('withdrawals')
-                } else {
-                  transfer()
-                }
-              }}
-              className={twMerge(
-                'w-full py-4 text-lg lg:text-2xl',
-                withdrawalButtonColorClassName
-              )}
-            >
-              <span className="block w-[360px] truncate">
-                {isSmartContractWallet && isTransferring
-                  ? 'Sending request...'
-                  : `Move funds to ${getNetworkName(l1Network.id)}`}
-              </span>
-            </Button>
-          )}
+          className="absolute left-0 top-0 z-0 h-full w-full bg-contain bg-left bg-no-repeat bg-origin-content p-2 opacity-50"
+          style={{ backgroundImage }}
+        ></div>
+        <div className="relative space-y-3.5 bg-contain bg-no-repeat p-3 sm:flex-row lg:p-2">
+          {children}
         </div>
-
-        {typeof tokenFromSearchParams !== 'undefined' && (
-          <TokenImportDialog
-            isOpen={importTokenModalStatus === ImportTokenModalStatus.OPEN}
-            onClose={() =>
-              setImportTokenModalStatus(ImportTokenModalStatus.CLOSED)
-            }
-            tokenAddress={tokenFromSearchParams}
-          />
-        )}
-
-        <TokenDepositCheckDialog
-          {...tokenCheckDialogProps}
-          type={tokenDepositCheckDialogType}
-          symbol={selectedToken ? selectedToken.symbol : 'ETH'}
-        />
-
-        {showSCWalletTooltip && (
-          <Tippy
-            placement="bottom-end"
-            maxWidth="auto"
-            onClickOutside={() => setShowSCWalletTooltip(false)}
-            theme="orange"
-            visible={showSCWalletTooltip}
-            content={
-              <div className="flex flex-col">
-                <span>
-                  <b>
-                    To continue, please approve tx on your smart contract
-                    wallet.
-                  </b>
-                </span>
-                <span>
-                  If you have k of n signers, then k of n will need to sign.
-                </span>
-              </div>
-            }
-          >
-            {/* Override margin coming from Tippy that causes layout disruptions */}
-            <div className="!m-0" />
-          </Tippy>
-        )}
       </div>
     </>
+  )
+}
+
+function StyledLoader() {
+  return <Loader color="white" size="small" />
+}
+
+function ETHBalance({
+  balance,
+  prefix = ''
+}: {
+  balance: BigNumber | null
+  prefix?: string
+}) {
+  if (!balance) {
+    return <StyledLoader />
+  }
+
+  return (
+    <p>
+      <span className="font-light">{prefix}</span>
+      <span>{formatAmount(balance, { symbol: 'ETH' })}</span>
+    </p>
+  )
+}
+
+function TokenBalance({
+  forToken,
+  balance,
+  on,
+  prefix = '',
+  tokenSymbolOverride
+}: {
+  forToken: ERC20BridgeToken | null
+  balance: BigNumber | null
+  on: NetworkType
+  prefix?: string
+  tokenSymbolOverride?: string
+}) {
+  const { l1, l2 } = useNetworksAndSigners()
+
+  const symbol = useMemo(() => {
+    if (!forToken) {
+      return undefined
+    }
+
+    return (
+      tokenSymbolOverride ??
+      sanitizeTokenSymbol(forToken.symbol, {
+        erc20L1Address: forToken.address,
+        chain: on === NetworkType.l1 ? l1.network : l2.network
+      })
+    )
+  }, [forToken, on, l1, l2])
+
+  if (!forToken) {
+    return null
+  }
+
+  if (!balance) {
+    return <StyledLoader />
+  }
+
+  return (
+    <p>
+      <span className="font-light">{prefix}</span>
+      <span>
+        {formatAmount(balance, {
+          decimals: forToken.decimals,
+          symbol
+        })}
+      </span>
+    </p>
+  )
+}
+
+function BalancesContainer({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="ml-1 flex flex-col flex-nowrap items-end break-all text-sm font-extralight tracking-[.25px] text-white md:text-lg lg:font-medium">
+      {children}
+    </div>
+  )
+}
+
+function NetworkListboxPlusBalancesContainer({
+  children
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex flex-row flex-nowrap items-center justify-between gap-1 whitespace-nowrap">
+      {children}
+    </div>
+  )
+}
+
+export enum TransferPanelMainErrorMessage {
+  INSUFFICIENT_FUNDS,
+  GAS_ESTIMATION_FAILURE,
+  WITHDRAW_ONLY,
+  SC_WALLET_ETH_NOT_SUPPORTED
+}
+
+export function TransferPanelMain({
+  amount,
+  setAmount,
+  errorMessage
+}: {
+  amount: string
+  setAmount: (value: string) => void
+  errorMessage?: TransferPanelMainErrorMessage
+}) {
+  const actions = useActions()
+
+  const { l1, l2 } = useNetworksAndSigners()
+  const { parentLayer, layer } = useChainLayers()
+  const isConnectedToArbitrum = useIsConnectedToArbitrum()
+  const isConnectedToOrbitChain = useIsConnectedToOrbitChain()
+  const { isArbitrumOne, isArbitrumGoerli } = isNetwork(l2.network.id)
+  const { isSmartContractWallet } = useAccountType()
+
+  const { switchNetworkAsync } = useSwitchNetworkWithConfig({
+    isSwitchingNetworkBeforeTx: true
+  })
+
+  const l1GasPrice = useGasPrice({ provider: l1.provider })
+  const l2GasPrice = useGasPrice({ provider: l2.provider })
+
+  const { app } = useAppState()
+  const { address: walletAddress } = useAccount()
+  const { arbTokenBridge, isDepositMode, selectedToken } = app
+  const { token } = arbTokenBridge
+
+  const { destinationAddress, setDestinationAddress } =
+    useDestinationAddressStore()
+  const destinationAddressOrWalletAddress = destinationAddress || walletAddress
+
+  const l1WalletAddress = isDepositMode
+    ? walletAddress
+    : destinationAddressOrWalletAddress
+
+  const l2WalletAddress = isDepositMode
+    ? destinationAddressOrWalletAddress
+    : walletAddress
+
+  const {
+    eth: [ethL1Balance],
+    erc20: [erc20L1Balances, updateErc20L1Balances]
+  } = useBalance({
+    provider: l1.provider,
+    walletAddress: l1WalletAddress
+  })
+  const {
+    eth: [ethL2Balance],
+    erc20: [erc20L2Balances, updateErc20L2Balances]
+  } = useBalance({
+    provider: l2.provider,
+    walletAddress: l2WalletAddress
+  })
+  const { updateUSDCBalances } = useUpdateUSDCBalances({
+    walletAddress: destinationAddressOrWalletAddress
+  })
+
+  useEffect(() => {
+    if (
+      !selectedToken ||
+      !destinationAddressOrWalletAddress ||
+      !utils.isAddress(destinationAddressOrWalletAddress)
+    ) {
+      return
+    }
+
+    if (
+      isTokenMainnetUSDC(selectedToken.address) ||
+      isTokenGoerliUSDC(selectedToken.address) ||
+      isTokenArbitrumOneNativeUSDC(selectedToken.address) ||
+      isTokenArbitrumGoerliNativeUSDC(selectedToken.address)
+    ) {
+      updateUSDCBalances(selectedToken.address)
+      return
+    }
+
+    updateErc20L1Balances([selectedToken.address])
+    if (selectedToken.l2Address) {
+      updateErc20L2Balances([selectedToken.l2Address])
+    }
+  }, [
+    selectedToken,
+    updateErc20L1Balances,
+    updateErc20L2Balances,
+    destinationAddressOrWalletAddress,
+    updateUSDCBalances
+  ])
+
+  const isSwitchingL2Chain = useIsSwitchingL2Chain()
+
+  const selectedTokenBalances = useMemo(() => {
+    const result: {
+      l1: BigNumber | null
+      l2: BigNumber | null
+    } = {
+      l1: null,
+      l2: null
+    }
+
+    if (!selectedToken) {
+      return result
+    }
+
+    if (erc20L1Balances) {
+      result.l1 = erc20L1Balances[selectedToken.address] ?? null
+    }
+
+    if (erc20L2Balances && selectedToken.l2Address) {
+      result.l2 = erc20L2Balances[selectedToken.l2Address] ?? null
+    }
+
+    if (
+      isTokenArbitrumOneNativeUSDC(selectedToken.address) &&
+      erc20L1Balances &&
+      erc20L2Balances
+    ) {
+      return {
+        l1: erc20L1Balances[CommonAddress.Mainnet.USDC] ?? null,
+        l2: erc20L2Balances[selectedToken.address] ?? null
+      }
+    }
+    if (
+      isTokenArbitrumGoerliNativeUSDC(selectedToken.address) &&
+      erc20L1Balances &&
+      erc20L2Balances
+    ) {
+      return {
+        l1: erc20L1Balances[CommonAddress.Goerli.USDC] ?? null,
+        l2: erc20L2Balances[selectedToken.address] ?? null
+      }
+    }
+
+    return result
+  }, [erc20L1Balances, erc20L2Balances, selectedToken])
+
+  const [externalFrom, externalTo] = useMemo(() => {
+    const isParentChainArbitrum = isNetwork(l1.network.id).isArbitrum
+
+    if (isParentChainArbitrum) {
+      return isConnectedToArbitrum
+        ? [l1.network, l2.network]
+        : [l2.network, l1.network]
+    }
+
+    // Parent chain is Ethereum.
+    return isConnectedToArbitrum
+      ? [l2.network, l1.network]
+      : [l1.network, l2.network]
+  }, [l1, l2, isConnectedToArbitrum])
+
+  const [from, setFrom] = useState<Chain>(externalFrom)
+  const [to, setTo] = useState<Chain>(externalTo)
+
+  const [loadingMaxAmount, setLoadingMaxAmount] = useState(false)
+  const [withdrawOnlyDialogProps, openWithdrawOnlyDialog] = useDialog()
+  const [oneNovaTransferDialogProps, openOneNovaTransferDialog] = useDialog()
+  const [
+    oneNovaTransferDestinationNetworkId,
+    setOneNovaTransferDestinationNetworkId
+  ] = useState<number | null>(null)
+  const isMaxAmount = amount === AmountQueryParamEnum.MAX
+
+  const showUSDCSpecificInfo =
+    (isTokenMainnetUSDC(selectedToken?.address) && isArbitrumOne) ||
+    (isTokenGoerliUSDC(selectedToken?.address) && isArbitrumGoerli)
+
+  const [, setQueryParams] = useArbQueryParams()
+
+  useEffect(() => {
+    setFrom(externalFrom)
+    setTo(externalTo)
+  }, [externalFrom, externalTo])
+
+  const estimateGas = useCallback(
+    async (
+      weiValue: BigNumber
+    ): Promise<
+      | GasEstimates & {
+          estimatedL2SubmissionCost: BigNumber
+        }
+    > => {
+      if (!walletAddress) {
+        return {
+          estimatedL1Gas: constants.Zero,
+          estimatedL2Gas: constants.Zero,
+          estimatedL2SubmissionCost: constants.Zero
+        }
+      }
+
+      if (isDepositMode) {
+        const result = await depositEthEstimateGas({
+          amount: weiValue,
+          address: walletAddress,
+          l1Provider: l1.provider,
+          l2Provider: l2.provider
+        })
+        return result
+      }
+
+      const result = await withdrawEthEstimateGas({
+        amount: weiValue,
+        address: walletAddress,
+        l2Provider: l2.provider
+      })
+
+      return { ...result, estimatedL2SubmissionCost: constants.Zero }
+    },
+    [isDepositMode, walletAddress, l1.provider, l2.provider]
+  )
+
+  const setMaxAmount = useCallback(async () => {
+    const ethBalance = isDepositMode ? ethL1Balance : ethL2Balance
+
+    const tokenBalance = isDepositMode
+      ? selectedTokenBalances.l1
+      : selectedTokenBalances.l2
+
+    if (selectedToken) {
+      if (!tokenBalance) {
+        return
+      }
+
+      // For tokens, we can set the max amount, and have the gas summary component handle the rest
+      setAmount(utils.formatUnits(tokenBalance, selectedToken?.decimals))
+      return
+    }
+
+    if (!ethBalance) {
+      return
+    }
+
+    try {
+      setLoadingMaxAmount(true)
+      const result = await estimateGas(ethBalance)
+
+      const estimatedL1GasFees = calculateEstimatedL1GasFees(
+        result.estimatedL1Gas,
+        l1GasPrice
+      )
+      const estimatedL2GasFees = calculateEstimatedL2GasFees(
+        result.estimatedL2Gas,
+        l2GasPrice,
+        result.estimatedL2SubmissionCost
+      )
+
+      const ethBalanceFloat = parseFloat(utils.formatEther(ethBalance))
+      const estimatedTotalGasFees = estimatedL1GasFees + estimatedL2GasFees
+      setAmount(String(ethBalanceFloat - estimatedTotalGasFees * 1.4))
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setLoadingMaxAmount(false)
+    }
+  }, [
+    estimateGas,
+    ethL1Balance,
+    ethL2Balance,
+    isDepositMode,
+    l1GasPrice,
+    l2GasPrice,
+    selectedToken,
+    setAmount,
+    selectedTokenBalances
+  ])
+
+  // whenever the user changes the `amount` input, it should update the amount in browser query params as well
+  useEffect(() => {
+    setQueryParams({ amount })
+
+    if (isMaxAmount) {
+      setMaxAmount()
+    }
+  }, [amount, isMaxAmount, setMaxAmount, setQueryParams])
+
+  useEffect(() => {
+    // Different destination address only allowed for tokens
+    if (!selectedToken) {
+      setDestinationAddress(undefined)
+    }
+  }, [selectedToken, setDestinationAddress])
+
+  const maxButtonVisible = useMemo(() => {
+    const ethBalance = isDepositMode ? ethL1Balance : ethL2Balance
+    const tokenBalance = isDepositMode
+      ? selectedTokenBalances.l1
+      : selectedTokenBalances.l2
+
+    if (selectedToken) {
+      if (!tokenBalance) {
+        return false
+      }
+
+      return !tokenBalance.isZero()
+    }
+
+    if (!ethBalance) {
+      return false
+    }
+
+    return !ethBalance.isZero()
+  }, [
+    ethL1Balance,
+    ethL2Balance,
+    selectedTokenBalances,
+    selectedToken,
+    isDepositMode
+  ])
+
+  const errorMessageText = useMemo(() => {
+    if (typeof errorMessage === 'undefined') {
+      return undefined
+    }
+
+    if (errorMessage === TransferPanelMainErrorMessage.GAS_ESTIMATION_FAILURE) {
+      return (
+        <span>
+          Gas estimation failed, join our{' '}
+          <ExternalLink
+            href="https://discord.com/invite/ZpZuw7p"
+            className="underline"
+          >
+            Discord
+          </ExternalLink>{' '}
+          and reach out in #support for assistance.
+        </span>
+      )
+    }
+
+    if (errorMessage === TransferPanelMainErrorMessage.WITHDRAW_ONLY) {
+      return (
+        <>
+          <span>This token can&apos;t be bridged over. </span>
+          <button
+            className="arb-hover underline"
+            onClick={openWithdrawOnlyDialog}
+          >
+            Learn more.
+          </button>
+        </>
+      )
+    }
+
+    if (
+      errorMessage === TransferPanelMainErrorMessage.SC_WALLET_ETH_NOT_SUPPORTED
+    ) {
+      return "ETH transfers using smart contract wallets aren't supported yet."
+    }
+
+    return `Insufficient balance, please add more to ${
+      isDepositMode ? parentLayer : layer
+    }.`
+  }, [errorMessage, isDepositMode, layer, openWithdrawOnlyDialog, parentLayer])
+
+  const switchNetworksOnTransferPanel = useCallback(() => {
+    const newFrom = to
+    const newTo = from
+
+    setFrom(newFrom)
+    setTo(newTo)
+
+    actions.app.setIsDepositMode(!app.isDepositMode)
+  }, [actions.app, app.isDepositMode, from, to])
+
+  useEffect(() => {
+    const isArbOneUSDC = isTokenArbitrumOneNativeUSDC(selectedToken?.address)
+    const isArbGoerliUSDC = isTokenArbitrumGoerliNativeUSDC(
+      selectedToken?.address
+    )
+    // If user select native USDC on L2, when switching to deposit mode,
+    // we need to default to set the corresponding USDC on L1
+    if (!isDepositMode) {
+      return
+    }
+
+    // When switching network, token might be undefined
+    if (!token) {
+      return
+    }
+
+    const commonUSDC = {
+      name: 'USD Coin',
+      type: TokenType.ERC20,
+      symbol: 'USDC',
+      decimals: 6,
+      listIds: new Set<number>()
+    }
+    if (isArbOneUSDC) {
+      token.updateTokenData(CommonAddress.Mainnet.USDC)
+      actions.app.setSelectedToken({
+        ...commonUSDC,
+        address: CommonAddress.Mainnet.USDC,
+        l2Address: CommonAddress.ArbitrumOne['USDC.e']
+      })
+    } else if (isArbGoerliUSDC) {
+      token.updateTokenData(CommonAddress.Goerli.USDC)
+      actions.app.setSelectedToken({
+        ...commonUSDC,
+        address: CommonAddress.Goerli.USDC,
+        l2Address: CommonAddress.ArbitrumGoerli['USDC.e']
+      })
+    }
+  }, [actions.app, isDepositMode, selectedToken, token])
+
+  type NetworkListboxesProps = {
+    from: Omit<NetworkListboxProps, 'label'>
+    to: Omit<NetworkListboxProps, 'label'>
+  }
+
+  const networkListboxProps: NetworkListboxesProps = useMemo(() => {
+    const options = getListboxOptionsFromL1Network(l1.network)
+
+    // used for switching to a specific network if L1 <> Orbit chain is selected in the UI
+    // we can have a more dynamic solution in the future with more Orbit chains
+    function mapChainToDefaultPartnerChain(chainId: ChainId) {
+      const customOrbitChain = getCustomChainFromLocalStorageById(chainId)
+
+      if (customOrbitChain) {
+        return customOrbitChain.partnerChainID
+      }
+
+      switch (chainId) {
+        case ChainId.Sepolia:
+        case ChainId.StylusTestnet:
+          return ChainId.ArbitrumSepolia
+        default:
+          return ChainId.ArbitrumGoerli
+      }
+    }
+
+    function updatePreferredL2Chain(l2ChainId: number) {
+      setQueryParams({ l2ChainId })
+    }
+
+    function modifyOptions(selectedChainId: ChainId, direction: 'from' | 'to') {
+      // Add L1 network to the list
+      return [l1.network, ...options].filter(option => {
+        // Remove the origin network from the destination list for contract wallets
+        // It's done so that the origin network is not changed
+        if (
+          isSmartContractWallet &&
+          direction === 'to' &&
+          option.id === from.id
+        ) {
+          return false
+        }
+        // Remove selected network from the list
+        return option.id !== selectedChainId
+      })
+    }
+
+    const fromOptions = modifyOptions(from.id, 'from')
+    const toOptions = modifyOptions(to.id, 'to')
+
+    function shouldOpenOneNovaDialog(selectedChainIds: number[]) {
+      return [ChainId.ArbitrumOne, ChainId.ArbitrumNova].every(chainId =>
+        selectedChainIds.includes(chainId)
+      )
+    }
+
+    if (isDepositMode) {
+      return {
+        from: {
+          disabled:
+            !fromOptions.length ||
+            isSmartContractWallet ||
+            typeof isSmartContractWallet === 'undefined',
+          options: fromOptions,
+          value: from,
+          onChange: async network => {
+            const { isEthereum } = isNetwork(network.id)
+
+            if (shouldOpenOneNovaDialog([network.id, to.id])) {
+              setOneNovaTransferDestinationNetworkId(to.id)
+              openOneNovaTransferDialog()
+              return
+            }
+
+            try {
+              await switchNetworkAsync?.(network.id)
+
+              const isOrbitChainSelected = isNetwork(l2.network.id).isOrbitChain
+              // Pair Ethereum with an Arbitrum chain if an Orbit chain is currently selected.
+              // Otherwise we want to keep the current chain, in case it's Nova.
+              if (isEthereum && isOrbitChainSelected) {
+                updatePreferredL2Chain(
+                  mapChainToDefaultPartnerChain(network.id)
+                )
+                return
+              }
+              updatePreferredL2Chain(network.id)
+            } catch (error: any) {
+              if (!isUserRejectedError(error)) {
+                Sentry.captureException(error)
+              }
+            }
+          }
+        },
+        to: {
+          disabled: !toOptions.length,
+          options: toOptions,
+          value: to,
+          onChange: async network => {
+            const { isEthereum, isOrbitChain } = isNetwork(network.id)
+            const defaultPartnerChain = mapChainToDefaultPartnerChain(
+              network.id
+            )
+
+            if (network.id === from.id) {
+              switchNetworksOnTransferPanel()
+              return
+            }
+
+            if (shouldOpenOneNovaDialog([network.id, from.id])) {
+              setOneNovaTransferDestinationNetworkId(network.id)
+              openOneNovaTransferDialog()
+              return
+            }
+
+            const isOrbitChainCurrentlySelected = isNetwork(
+              l2.network.id
+            ).isOrbitChain
+            // Pair Ethereum with an Arbitrum chain if an Orbit chain is currently selected.
+            // Otherwise we want to keep the current chain, in case it's Nova.
+            if (isEthereum && isOrbitChainCurrentlySelected) {
+              updatePreferredL2Chain(defaultPartnerChain)
+              return
+            }
+
+            // If Orbit chain is selected, we want to change network to Arbitrum One or Arbitrum Goerli.
+            if (isOrbitChain) {
+              try {
+                if (!isConnectedToArbitrum) {
+                  await switchNetworkAsync?.(defaultPartnerChain)
+                }
+              } catch (error: any) {
+                if (!isUserRejectedError(error)) {
+                  Sentry.captureException(error)
+                }
+                return
+              }
+            }
+
+            updatePreferredL2Chain(network.id)
+            setTo(network)
+          }
+        }
+      }
+    }
+
+    return {
+      from: {
+        disabled:
+          !fromOptions.length ||
+          isSmartContractWallet ||
+          typeof isSmartContractWallet === 'undefined',
+        options: fromOptions,
+        value: from,
+        onChange: async network => {
+          const { isEthereum } = isNetwork(network.id)
+
+          if (shouldOpenOneNovaDialog([network.id, to.id])) {
+            setOneNovaTransferDestinationNetworkId(to.id)
+            openOneNovaTransferDialog()
+            return
+          }
+
+          try {
+            // In withdraw mode we always switch to the L2 network.
+            await switchNetworkAsync?.(network.id)
+
+            const isOrbitChainSelected = isNetwork(l2.network.id).isOrbitChain
+            // Pair Ethereum with an Arbitrum chain if an Orbit chain is currently selected.
+            // Otherwise we want to keep the current chain, in case it's Nova.
+            if (isEthereum && isOrbitChainSelected) {
+              updatePreferredL2Chain(mapChainToDefaultPartnerChain(network.id))
+              return
+            }
+            updatePreferredL2Chain(network.id)
+          } catch (error: any) {
+            if (!isUserRejectedError(error)) {
+              Sentry.captureException(error)
+            }
+          }
+        }
+      },
+      to: {
+        disabled: !toOptions.length,
+        options: toOptions,
+        value: to,
+        onChange: async network => {
+          const { isEthereum, isOrbitChain } = isNetwork(network.id)
+          const defaultPartnerChain = mapChainToDefaultPartnerChain(network.id)
+
+          if (network.id === from.id) {
+            switchNetworksOnTransferPanel()
+            return
+          }
+
+          if (shouldOpenOneNovaDialog([network.id, from.id])) {
+            setOneNovaTransferDestinationNetworkId(network.id)
+            openOneNovaTransferDialog()
+            return
+          }
+
+          if (isEthereum) {
+            if (isConnectedToOrbitChain) {
+              try {
+                // If connected to an Orbit chain, we need to change network to Arbitrum.
+                // We can't withdraw from an Orbit chain to Ethereum.
+                await switchNetworkAsync?.(defaultPartnerChain)
+                updatePreferredL2Chain(defaultPartnerChain)
+                return
+              } catch (error: any) {
+                if (!isUserRejectedError(error)) {
+                  Sentry.captureException(error)
+                }
+                return
+              }
+            }
+            // Connected to Arbitrum.
+            updatePreferredL2Chain(defaultPartnerChain)
+          }
+
+          if (isOrbitChain) {
+            const isConnectedToEthereum =
+              !isConnectedToArbitrum && !isConnectedToOrbitChain
+
+            if (isConnectedToEthereum) {
+              // If connected to Ethereum, we need to change network to Arbitrum.
+              // We can't deposit from Ethereum to an Orbit chain.
+              await switchNetworkAsync?.(defaultPartnerChain)
+            }
+
+            const isOrbitChainCurrentlySelected = isNetwork(
+              l2.network.id
+            ).isOrbitChain
+            if (isOrbitChainCurrentlySelected) {
+              // long-term we will have to change to Orbit chain's parent network
+              // right now only Arbitrum Goerli is support so it's fine
+              await switchNetworkAsync?.(defaultPartnerChain)
+            }
+
+            updatePreferredL2Chain(network.id)
+          }
+
+          setTo(network)
+        }
+      }
+    }
+  }, [
+    l1.network,
+    l2.network,
+    from,
+    to,
+    isSmartContractWallet,
+    isDepositMode,
+    setQueryParams,
+    switchNetworkAsync,
+    switchNetworksOnTransferPanel,
+    openOneNovaTransferDialog,
+    isConnectedToArbitrum,
+    isConnectedToOrbitChain
+  ])
+
+  return (
+    <div className="flex flex-col px-6 py-6 lg:min-w-[540px] lg:px-0 lg:pl-6">
+      <NetworkContainer network={from}>
+        <NetworkListboxPlusBalancesContainer>
+          <NetworkListbox label="From:" {...networkListboxProps.from} />
+          <BalancesContainer>
+            {isSwitchingL2Chain ? (
+              <StyledLoader />
+            ) : (
+              <>
+                <TokenBalance
+                  on={app.isDepositMode ? NetworkType.l1 : NetworkType.l2}
+                  balance={
+                    app.isDepositMode
+                      ? selectedTokenBalances.l1
+                      : selectedTokenBalances.l2
+                  }
+                  forToken={selectedToken}
+                  prefix={selectedToken ? 'BALANCE: ' : ''}
+                />
+                <ETHBalance
+                  balance={app.isDepositMode ? ethL1Balance : ethL2Balance}
+                  prefix={selectedToken ? '' : 'BALANCE: '}
+                />
+              </>
+            )}
+          </BalancesContainer>
+        </NetworkListboxPlusBalancesContainer>
+
+        <div className="flex flex-col space-y-1 pb-2.5">
+          <TransferPanelMainInput
+            maxButtonProps={{
+              visible: maxButtonVisible,
+              loading: isMaxAmount || loadingMaxAmount,
+              onClick: setMaxAmount
+            }}
+            errorMessage={errorMessageText}
+            disabled={isSwitchingL2Chain}
+            value={isMaxAmount ? '' : amount}
+            onChange={e => {
+              setAmount(e.target.value)
+            }}
+          />
+
+          {showUSDCSpecificInfo && (
+            <p className="mt-1 text-xs font-light text-white">
+              Bridged USDC (USDC.e) will work but is different from Native USDC.{' '}
+              <ExternalLink
+                href={USDC_LEARN_MORE_LINK}
+                className="arb-hover underline"
+              >
+                Learn more
+              </ExternalLink>
+              .
+            </p>
+          )}
+
+          {isDepositMode && selectedToken && (
+            <p className="mt-1 text-xs font-light text-white">
+              Make sure you have ETH in your {layer} wallet, you’ll need it to
+              power transactions.
+              <br />
+              <ExternalLink
+                href={ETH_BALANCE_ARTICLE_LINK}
+                className="arb-hover underline"
+              >
+                Learn more
+              </ExternalLink>
+              .
+            </p>
+          )}
+        </div>
+      </NetworkContainer>
+
+      <div className="z-10 flex h-10 w-full items-center justify-center lg:h-12">
+        <SwitchNetworksButton
+          onClick={switchNetworksOnTransferPanel}
+          aria-label="Switch Networks" // useful for accessibility, and catching the element in automation
+        />
+      </div>
+
+      <NetworkContainer network={to} customAddress={destinationAddress}>
+        <NetworkListboxPlusBalancesContainer>
+          <NetworkListbox label="To:" {...networkListboxProps.to} />
+          <BalancesContainer>
+            {isSwitchingL2Chain ? (
+              <StyledLoader />
+            ) : (
+              destinationAddressOrWalletAddress &&
+              utils.isAddress(destinationAddressOrWalletAddress) && (
+                <>
+                  <TokenBalance
+                    balance={
+                      app.isDepositMode
+                        ? selectedTokenBalances.l2
+                        : selectedTokenBalances.l1
+                    }
+                    on={app.isDepositMode ? NetworkType.l2 : NetworkType.l1}
+                    forToken={selectedToken}
+                    prefix={selectedToken ? 'BALANCE: ' : ''}
+                  />
+                  {/* In deposit mode, when user selected USDC on mainnet,
+                  the UI shows the Arb One balance of both USDC.e and native USDC */}
+                  {app.isDepositMode && showUSDCSpecificInfo && (
+                    <TokenBalance
+                      balance={
+                        (isArbitrumOne
+                          ? erc20L2Balances?.[CommonAddress.ArbitrumOne.USDC]
+                          : erc20L2Balances?.[
+                              CommonAddress.ArbitrumGoerli.USDC
+                            ]) ?? constants.Zero
+                      }
+                      on={NetworkType.l2}
+                      forToken={
+                        selectedToken
+                          ? { ...selectedToken, symbol: 'USDC' }
+                          : null
+                      }
+                      tokenSymbolOverride="USDC"
+                    />
+                  )}
+                  <ETHBalance
+                    balance={app.isDepositMode ? ethL2Balance : ethL1Balance}
+                    prefix={selectedToken ? '' : 'BALANCE: '}
+                  />
+                </>
+              )
+            )}
+          </BalancesContainer>
+        </NetworkListboxPlusBalancesContainer>
+      </NetworkContainer>
+
+      <AdvancedSettings />
+      <Dialog
+        closeable
+        title="Token not supported"
+        cancelButtonProps={{ className: 'hidden' }}
+        actionButtonTitle="Close"
+        {...withdrawOnlyDialogProps}
+        className="md:max-w-[628px]"
+      >
+        <p>
+          The Arbitrum bridge does not currently support {selectedToken?.symbol}
+          , please ask the {selectedToken?.symbol} team for more info.
+        </p>
+      </Dialog>
+      <OneNovaTransferDialog
+        {...oneNovaTransferDialogProps}
+        onClose={() => setOneNovaTransferDestinationNetworkId(null)}
+        destinationChainId={oneNovaTransferDestinationNetworkId}
+        amount={amount}
+      />
+    </div>
   )
 }
