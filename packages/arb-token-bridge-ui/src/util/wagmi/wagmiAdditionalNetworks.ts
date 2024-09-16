@@ -92,6 +92,27 @@ export const xaiTestnet: Chain = {
   }
 }
 
+export const nscTestnet: Chain = {
+  id: ChainId.NscTestnet,
+  name: 'Network Spirituality Chain',
+  network: 'network-spirituality-chain',
+  nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+  rpcUrls: {
+    default: {
+      http: [rpcURLs[ChainId.NscTestnet]!]
+    },
+    public: {
+      http: [rpcURLs[ChainId.NscTestnet]!]
+    }
+  },
+  blockExplorers: {
+    default: {
+      name: 'Blockscout',
+      url: 'https://test-explorer.nsc.network'
+    }
+  }
+}
+
 export const stylusTestnet: Chain = {
   id: ChainId.StylusTestnet,
   name: 'Stylus Testnet',
